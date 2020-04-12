@@ -12,6 +12,7 @@ const tokenLength = 8
 const nodeIdLength = 20
 const nodeInfoLength = 26
 const nodeIdIpLength = 24
+const neighborLength = 16
 
 // 生成随机的事务id, 2个字节长
 func randomTid() string {
@@ -22,6 +23,12 @@ func randomTid() string {
 func randomNodeId() string {
 	return randomString(nodeIdLength)
 }
+
+// 生成临近的节点id
+func getNeighbor(target string) string {
+	return target[:neighborLength] + randomNodeId()[neighborLength:]
+}
+
 
 // 生成随机token, 8个字节长
 func randomToken() string {

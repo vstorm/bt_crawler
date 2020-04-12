@@ -2,9 +2,11 @@ package dht
 
 import (
 	"encoding/hex"
+	"fmt"
 	"github.com/zeebo/bencode"
 	"log"
 	"net"
+	"os"
 	"strconv"
 )
 
@@ -30,7 +32,7 @@ type KServer struct {
 
 func NewKServer() (s *KServer, err error) {
 	s = &KServer{}
-	s.udp, err = net.ListenPacket("udp", ":" + listenUdpPort)
+	s.udp, err = net.ListenPacket("udp", ":"+listenUdpPort)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -41,8 +43,8 @@ func NewKServer() (s *KServer, err error) {
 
 // 加入 dht 网络
 func (s *KServer) bootstrap() {
-	log.Print("bootstrap")
 	for _, node := range bootstrapNodes {
+		log.Printf("start bootstrap to %v", node)
 		host, port, err := net.SplitHostPort(node)
 		if err != nil {
 			log.Panic(err)
@@ -56,7 +58,7 @@ func (s *KServer) bootstrap() {
 			s.sendFindNode(&net.UDPAddr{
 				IP:   net.ParseIP(addr),
 				Port: p,
-			})
+			}, "")
 		}
 	}
 }
@@ -76,24 +78,36 @@ func (s *KServer) sendRpc(msg message, addr net.Addr) {
 
 // 响应 krpc 错误
 func (s *KServer) sendError(tid string, addr net.Addr) {
-	msg := message{t: tid,
-		y: "e",
-		e: "",	// todo
+	e := make([]interface{}, 2)
+	e = append(e, 202, "Server Error")
+	msg := message{T: tid,
+		Y: "e",
+		E: e,
 	}
 	s.sendRpc(msg, addr)
 }
 
 // 发送 find_node 请求
-func (s *KServer) sendFindNode(addr net.Addr) {
-	log.Print("sendFindNode")
+func (s *KServer) sendFindNode(addr net.Addr, nId string) {
+	//log.Printf("sendFindNode to %v", addr.String())
 	var nodeId string
-	nodeId = randomNodeId()
+
+	if nId == "" {
+		nodeId = s.nodeId
+	} else {
+		//刚开始时，使用随机的节点id，能接收到get_peers请求很少
+		//使用和被请求的节点target的节点id临近的节点id，这样当target节点收到其他客户端的get_peers请求后，
+		//更有可能将我们的节点信息包含在get_peers响应中
+		//随后，其他客户端就会发送get_peers请求给我们
+		//nodeId = randomNodeId()
+		nodeId = getNeighbor(nId)
+	}
 	targetNodeId := randomNodeId()
 	msg := message{
-		t: randomTid(),
-		y: "q",
-		q: "find_node",
-		a: map[string]string{
+		T: randomTid(),
+		Y: "q",
+		Q: "find_node",
+		A: map[string]string{
 			"id":     nodeId,
 			"target": targetNodeId,
 		},
@@ -103,16 +117,12 @@ func (s *KServer) sendFindNode(addr net.Addr) {
 
 // 分发接收到请求和响应信息到对应的函数处理
 func (s *KServer) onMessage(msg message, addr net.Addr) {
-	switch msg.y {
+	switch msg.Y {
 	case "r": // 响应消息
 		// 因为我们只发送了 find_node 请求，所以我们只处理 find_node 响应
-		if r, ok := msg.r.(map[string][]byte); ok {
-			if _, ok := r["nodes"]; ok {
-				s.onFindNodeResponse(msg)
-			}
-		}
+		s.onFindNodeResponse(msg)
 	case "q": // 请求消息
-		switch msg.q {
+		switch msg.Q {
 		case "ping":
 			s.onPingRequest(msg, addr)
 		case "find_node":
@@ -129,9 +139,10 @@ func (s *KServer) onMessage(msg message, addr net.Addr) {
 
 // 处理 find_node 响应
 func (s *KServer) onFindNodeResponse(msg message) {
-	if r, ok := msg.r.(map[string][]byte); ok {
-		if nodes, ok := r["nodes"]; ok {
-			for _, node := range nodesInfo(nodes) {
+	//log.Print("onFindNodeResponse")
+	if r, ok := msg.R.(map[string]interface{}); ok {
+		if nodes, ok := r["nodes"].(string); ok {
+			for _, node := range nodesInfo([]byte(nodes)) {
 				s.ch <- node
 			}
 		}
@@ -142,10 +153,11 @@ func (s *KServer) onFindNodeResponse(msg message) {
 // ping Query = {"t":"aa", "y":"q", "q":"ping", "a":{"id":"abcdefghij0123456789"}}
 // Response = {"t":"aa", "y":"r", "r": {"id":"mnopqrstuvwxyz123456"}}
 func (s *KServer) onPingRequest(msg message, addr net.Addr) {
-	tid := msg.t
+	//log.Printf("ping request from %v", addr.String())
+	tid := msg.T
 	msg = message{
-		t:tid,
-		r:map[string]string {
+		T: tid,
+		R: map[string]string{
 			"id": randomNodeId(),
 		},
 	}
@@ -156,9 +168,10 @@ func (s *KServer) onPingRequest(msg message, addr net.Addr) {
 // find_node Query = {"t":"aa", "y":"q", "q":"find_node", "a": {"id":"abcdefghij0123456789", "target":"mnopqrstuvwxyz123456"}}
 // Response = {"t":"aa", "y":"r", "r": {"id":"0123456789abcdefghij", "nodes": "def456..."}}
 func (s *KServer) onFindNodeRequest(msg message, addr net.Addr) {
-	tid := msg.t
-	msg = message{t:tid,r:map[string]string {
-		"id": randomNodeId(),
+	//log.Printf("find_node request from %v", addr.String())
+	tid := msg.T
+	msg = message{T: tid, R: map[string]string{
+		"id":    randomNodeId(),
 		"nodes": "",
 	}}
 	s.sendRpc(msg, addr)
@@ -169,14 +182,16 @@ func (s *KServer) onFindNodeRequest(msg message, addr net.Addr) {
 // Response with peers = {"t":"aa", "y":"r", "r": {"id":"abcdefghij0123456789", "token":"aoeusnth", "values": ["axje.u", "idhtnm"]}}
 // Response with closest nodes = {"t":"aa", "y":"r", "r": {"id":"abcdefghij0123456789", "token":"aoeusnth", "nodes": "def456..."}}
 func (s *KServer) onGetPeersRequest(msg message, addr net.Addr) {
-	tid := msg.t
-	if a, ok := msg.a.(map[string][]byte); ok {
-		if infoHash, ok := a["info_hash"]; ok {
-			s.saveInfoHash(infoHash)
-			msg := message{t:tid,
-				y: "r",
-				r: map[string]string{
-					"id": randomNodeId(),
+	log.Printf("get_peers request from %v", addr.String())
+	tid := msg.T
+	if a, ok := msg.A.(map[string]interface{}); ok {
+		if infoHash, ok := a["info_hash"].(string); ok {
+			s.saveInfoHash([]byte(infoHash))
+			msg := message{
+				T: tid,
+				Y: "r",
+				R: map[string]string{
+					"id":    randomNodeId(),
 					"token": randomToken(),
 					"nodes": "",
 				}}
@@ -191,13 +206,15 @@ func (s *KServer) onGetPeersRequest(msg message, addr net.Addr) {
 // announce_peers Query = {"t":"aa", "y":"q", "q":"announce_peer", "a": {"id":"abcdefghij0123456789", "implied_port": 1, "info_hash":"mnopqrstuvwxyz123456", "port": 6881, "token": "aoeusnth"}}
 // Response = {"t":"aa", "y":"r", "r": {"id":"mnopqrstuvwxyz123456"}}
 func (s *KServer) onAnnouncePeerRequest(msg message, addr net.Addr) {
-	tid := msg.t
-	if a, ok := msg.a.(map[string][]byte); ok {
-		if infoHash, ok := a["info_hash"]; ok {
-			s.saveInfoHash(infoHash)
-			msg := message{t:tid,
-				y: "r",
-				r: map[string]string{
+	log.Printf("announce_peers request from %v", addr.String())
+	tid := msg.T
+	if a, ok := msg.A.(map[string]interface{}); ok {
+		if infoHash, ok := a["info_hash"].(string); ok {
+			s.saveInfoHash([]byte(infoHash))
+			msg := message{
+				T: tid,
+				Y: "r",
+				R: map[string]string{
 					"id": randomNodeId(),
 				}}
 			s.sendRpc(msg, addr)
@@ -210,17 +227,19 @@ func (s *KServer) onAnnouncePeerRequest(msg message, addr net.Addr) {
 // 保存 info hash
 func (s *KServer) saveInfoHash(infoHash []byte) {
 	infoHashHex := hex.EncodeToString(infoHash)
-	print(infoHashHex)
+	log.Print(infoHashHex)
 }
 
 // 循环发送 find_node 请求，让自己加入到更多节点的路由表中
 func (s *KServer) SendFindNodeForever() {
 	log.Print("循环发送 find_node 请求")
-	select {
-	case node := <-s.ch:
-		s.sendFindNode(node.addr)
-	default:
-		s.bootstrap()
+	for {
+		select {
+		case node := <-s.ch:
+			s.sendFindNode(node.addr, node.nodeId)
+		default:
+			s.bootstrap()
+		}
 	}
 }
 
@@ -230,16 +249,17 @@ func (s *KServer) ReceiveForever() {
 	s.bootstrap()
 	for {
 		buf := make([]byte, udpRecvBufferSize)
-		_, addr, err := s.udp.ReadFrom(buf)
-		log.Print(buf)
+		n, addr, err := s.udp.ReadFrom(buf)
+		//log.Printf("receive response from %v", addr.String())
 		if err != nil {
 			continue
 		}
 
 		msg := message{}
 		// 接收到信息使用bencode解码
-		err = bencode.DecodeBytes(buf, msg)
+		err = bencode.DecodeBytes(buf[0:n], &msg)
 		if err != nil {
+			log.Print(err)
 			continue
 		}
 		// 开启协程处理消息

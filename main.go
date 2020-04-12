@@ -13,5 +13,4 @@ func main() {
 
 	go server.SendFindNodeForever()
 	server.ReceiveForever()
-
 }
