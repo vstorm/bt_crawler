@@ -1,4 +1,4 @@
-package dht
+package btdht
 
 // krpc消息
 type message struct {

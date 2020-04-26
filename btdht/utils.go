@@ -1,7 +1,10 @@
-package dht
+package btdht
 
 import (
 	"encoding/binary"
+	"encoding/hex"
+	msg "github.com/vstorm/bt_crawler/msq"
+	"log"
 	"math/rand"
 	"net"
 	"time"
@@ -12,7 +15,7 @@ const tokenLength = 8
 const nodeIdLength = 20
 const nodeInfoLength = 26
 const nodeIdIpLength = 24
-const neighborLength = 16
+const neighborLength = 14
 
 // 生成随机的事务id, 2个字节长
 func randomTid() string {
@@ -63,5 +66,12 @@ func nodesInfo(compactNodes []byte) (nodes []kNode) {
 		i += nodeInfoLength
 	}
 	return nodes
+}
 
+// 保存 info hash
+func saveInfoHash(infoHash []byte) {
+	infoHashHex := hex.EncodeToString(infoHash)
+	log.Print(infoHashHex)
+
+	msg.Send(msg.InfoHashTopic, infoHashHex)
 }

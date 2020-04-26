@@ -1,26 +1,26 @@
-package dht
+package btdht
 
 import (
-	"encoding/hex"
-	"fmt"
 	"github.com/zeebo/bencode"
 	"log"
 	"net"
-	"os"
 	"strconv"
+	"time"
 )
 
 const udpRecvBufferSize = 65535
-const listenUdpPort = "11111"
+const listenUdpPort = "11115"
 const chSize = 10000
+const sleepTime = time.Millisecond * 50
+const reBootstrapTime = time.Second * 10
 
 var bootstrapNodes = []string{
 	"router.utorrent.com:6881",
 	"router.bittorrent.com:6881",
-	"dht.transmissionbt.com:6881",
-	"dht.aelitis.com:6881",
+	"btdht.transmissionbt.com:6881",
+	"btdht.aelitis.com:6881",
 	"router.silotis.us:6881",
-	"dht.libtorrent.org:25401",
+	"btdht.libtorrent.org:25401",
 }
 
 type KServer struct {
@@ -41,10 +41,10 @@ func NewKServer() (s *KServer, err error) {
 	return
 }
 
-// 加入 dht 网络
+// 加入 btdht 网络
 func (s *KServer) bootstrap() {
 	for _, node := range bootstrapNodes {
-		log.Printf("start bootstrap to %v", node)
+		//log.Printf("start bootstrap to %v", node)
 		host, port, err := net.SplitHostPort(node)
 		if err != nil {
 			log.Panic(err)
@@ -153,7 +153,7 @@ func (s *KServer) onFindNodeResponse(msg message) {
 // ping Query = {"t":"aa", "y":"q", "q":"ping", "a":{"id":"abcdefghij0123456789"}}
 // Response = {"t":"aa", "y":"r", "r": {"id":"mnopqrstuvwxyz123456"}}
 func (s *KServer) onPingRequest(msg message, addr net.Addr) {
-	//log.Printf("ping request from %v", addr.String())
+	log.Printf("ping request from %v", addr.String())
 	tid := msg.T
 	msg = message{
 		T: tid,
@@ -168,7 +168,7 @@ func (s *KServer) onPingRequest(msg message, addr net.Addr) {
 // find_node Query = {"t":"aa", "y":"q", "q":"find_node", "a": {"id":"abcdefghij0123456789", "target":"mnopqrstuvwxyz123456"}}
 // Response = {"t":"aa", "y":"r", "r": {"id":"0123456789abcdefghij", "nodes": "def456..."}}
 func (s *KServer) onFindNodeRequest(msg message, addr net.Addr) {
-	//log.Printf("find_node request from %v", addr.String())
+	log.Printf("find_node request from %v", addr.String())
 	tid := msg.T
 	msg = message{T: tid, R: map[string]string{
 		"id":    randomNodeId(),
@@ -186,7 +186,7 @@ func (s *KServer) onGetPeersRequest(msg message, addr net.Addr) {
 	tid := msg.T
 	if a, ok := msg.A.(map[string]interface{}); ok {
 		if infoHash, ok := a["info_hash"].(string); ok {
-			s.saveInfoHash([]byte(infoHash))
+			saveInfoHash([]byte(infoHash))
 			msg := message{
 				T: tid,
 				Y: "r",
@@ -210,7 +210,7 @@ func (s *KServer) onAnnouncePeerRequest(msg message, addr net.Addr) {
 	tid := msg.T
 	if a, ok := msg.A.(map[string]interface{}); ok {
 		if infoHash, ok := a["info_hash"].(string); ok {
-			s.saveInfoHash([]byte(infoHash))
+			saveInfoHash([]byte(infoHash))
 			msg := message{
 				T: tid,
 				Y: "r",
@@ -224,10 +224,12 @@ func (s *KServer) onAnnouncePeerRequest(msg message, addr net.Addr) {
 	s.sendError(tid, addr)
 }
 
-// 保存 info hash
-func (s *KServer) saveInfoHash(infoHash []byte) {
-	infoHashHex := hex.EncodeToString(infoHash)
-	log.Print(infoHashHex)
+// 定时执行 bootstrap
+func (s *KServer) ReBootstrap() {
+	for {
+		time.Sleep(reBootstrapTime)
+		s.bootstrap()
+	}
 }
 
 // 循环发送 find_node 请求，让自己加入到更多节点的路由表中
@@ -237,6 +239,7 @@ func (s *KServer) SendFindNodeForever() {
 		select {
 		case node := <-s.ch:
 			s.sendFindNode(node.addr, node.nodeId)
+			time.Sleep(sleepTime)	// 降低下发送find_node请求的速度，之前发送地太快，CPU占用很高
 		default:
 			s.bootstrap()
 		}
