@@ -6,18 +6,12 @@ import (
 	"os"
 )
 
-const broker = "192.168.30.174:9003"
-const InfoHashTopic = "info-hash"
 var Producer *kafka.Producer = nil
 
 func init() {
 	//https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md
-	Producer, err := kafka.NewProducer(&kafka.ConfigMap{
-		"bootstrap.servers": broker,
-		"retries": 10,	// 重试次数
-		"acks": -1,	// 确认模式，ack=all
-		//"partitioner": "consistent_random"  // 默认分区器
-	})
+	var err error
+	Producer, err = kafka.NewProducer(producerConfig)
 
 	if err != nil {
 		log.Printf("Failed to create producer: %s\n", err)
